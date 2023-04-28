@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: A sample Athena database
+
+Parameters:
+  BucketPrefix:
+    Type: 'String'
+    Description: 'Prefix of the S3 bucket to create (account & region will be appended to help keep it unique)'
+    Default: "cumulus-library-sample-db"
+  GlueDatabaseName:
+    Type: 'String'
+    Description: 'Name for Glue database to create (use underscores for ease of SQL)'
+    Default: "cumulus_library_sample_db"
+
+
+Resources:
+  ####################################################
+  # S3 Buckets
+  ####################################################
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${BucketPrefix}-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AWSBucketAllowReadWrite
+            Effect: Allow
+            Principal:
+              AWS: !Ref AWS::AccountId
+            Action:
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+          - Sid: AWSBucketAllowListing
+            Effect: Allow
+            Principal:
+              AWS: !Ref AWS::AccountId
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}"
+
+  ####################################################
+  # Glue database & tables
+  ####################################################
+
+  CrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3BucketAccessPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}/data/*"
+
+  GlueDB:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub "${GlueDatabaseName}-crawler"
+      DatabaseName: !Ref GlueDB
+      Role: !GetAtt CrawlerRole.Arn
+      RecrawlPolicy:
+        RecrawlBehavior: CRAWL_EVERYTHING
+      SchemaChangePolicy:
+        DeleteBehavior: DEPRECATE_IN_DATABASE
+        UpdateBehavior: UPDATE_IN_DATABASE
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${S3Bucket}/data"
+
+  ####################################################
+  # Athena queries and where to store them
+  ####################################################
+
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Ref GlueDatabaseName
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: True
+        PublishCloudWatchMetricsEnabled: True
+        EngineVersion:
+          SelectedEngineVersion: "Athena engine version 2"
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${S3Bucket}/athena-results"
+
+Outputs:
+  BucketName:
+    Description: Final bucket name
+    Value: !Ref S3Bucket
